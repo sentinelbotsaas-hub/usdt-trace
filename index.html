@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>USDT 來源追查</title>
+<meta name="description" content="貼上 TRC20 收款地址，往上追幾層付款來源，逐址比對 Tether 凍結黑名單。純前端，不收集任何資料。">
+<style>
+/* Hallmark · macrostructure: Workbench · genre: modern-minimal · theme: Cobalt (light · system-sans · cool)
+ * nav: none (single tool) · footer: Ft1 minimal line · enrichment: none
+ * pre-emit critique: P4 H4 E4 S5 R5 V4
+ */
+:root{
+  --color-paper:oklch(98.5% 0.004 250);--color-paper-2:oklch(95.5% 0.008 250);--color-rule:oklch(88% 0.012 250);
+  --color-ink:oklch(23% 0.02 255);--color-ink-2:oklch(46% 0.02 255);--color-accent:oklch(49% 0.17 258);
+  --color-accent-ink:oklch(98% 0.01 258);--color-danger:oklch(52% 0.2 27);--color-danger-bg:oklch(95% 0.035 27);
+  --color-warn:oklch(52% 0.12 70);--color-warn-bg:oklch(95.5% 0.05 85);--color-ok:oklch(48% 0.11 155);
+  --color-focus:oklch(60% 0.19 258);
+  --font-body:-apple-system,"PingFang TC","Microsoft JhengHei","Noto Sans TC",sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  --space-xs:4px;--space-sm:8px;--space-md:16px;--space-lg:24px;--space-xl:40px;--space-2xl:64px;
+  --text-sm:.8125rem;--text-base:.9375rem;--text-lg:1.125rem;--text-2xl:clamp(1.5rem,4vw,2.125rem);
+  --radius:6px;--ease-out:cubic-bezier(.2,.7,.2,1);--dur:220ms;
+}
+@media (prefers-color-scheme:dark){:root{
+  --color-paper:oklch(19% 0.015 255);--color-paper-2:oklch(23% 0.018 255);--color-rule:oklch(32% 0.02 255);
+  --color-ink:oklch(93% 0.008 255);--color-ink-2:oklch(72% 0.015 255);--color-accent:oklch(70% 0.14 258);
+  --color-accent-ink:oklch(18% 0.02 258);--color-danger:oklch(72% 0.16 27);--color-danger-bg:oklch(28% 0.06 27);
+  --color-warn:oklch(80% 0.12 80);--color-warn-bg:oklch(28% 0.05 80);--color-ok:oklch(75% 0.12 155);
+}}
+*{box-sizing:border-box}
+html,body{overflow-x:clip}
+body{margin:0;background:var(--color-paper);color:var(--color-ink);font:400 var(--text-base)/1.65 var(--font-body)}
+main{max-width:980px;margin:0 auto;padding:var(--space-xl) var(--space-md) var(--space-2xl)}
+h1{font-size:var(--text-2xl);line-height:1.2;margin:0 0 var(--space-sm);font-weight:700;letter-spacing:-.01em}
+h2{font-size:var(--text-lg);margin:0;font-weight:700}
+p{margin:0 0 var(--space-md)}
+.lede{color:var(--color-ink-2);max-width:60ch}
+.mono{font-family:var(--font-mono);font-size:.92em;overflow-wrap:anywhere}
+a{color:var(--color-accent)}
+.notice{margin:var(--space-lg) 0 0;padding:var(--space-md);border-left:3px solid var(--color-warn);background:var(--color-warn-bg);border-radius:0 var(--radius) var(--radius) 0;font-size:var(--text-sm)}
+form{display:grid;gap:var(--space-md);margin:var(--space-lg) 0 var(--space-xl);padding:var(--space-lg);background:var(--color-paper-2);border:1px solid var(--color-rule);border-radius:var(--radius)}
+label{display:grid;gap:var(--space-xs);font-weight:600;font-size:var(--text-sm)}
+label small{font-weight:400;color:var(--color-ink-2)}
+textarea,select,input{font:inherit;color:inherit;background:var(--color-paper);border:1px solid var(--color-rule);border-radius:var(--radius);padding:var(--space-sm) 10px;min-width:0}
+textarea{font-family:var(--font-mono);font-size:var(--text-sm);min-height:110px;resize:vertical}
+:focus-visible{outline:2px solid var(--color-focus);outline-offset:2px}
+.row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-md)}
+@media (max-width:640px){.row{grid-template-columns:minmax(0,1fr)}}
+.actions{display:flex;gap:var(--space-sm);flex-wrap:wrap;align-items:center}
+button{font:600 var(--text-base)/1 var(--font-body);white-space:nowrap;padding:12px 20px;border-radius:var(--radius);border:1px solid var(--color-accent);background:var(--color-accent);color:var(--color-accent-ink);cursor:pointer}
+button:hover{filter:brightness(1.08)}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.ghost{background:transparent;color:var(--color-accent)}
+#status{color:var(--color-ink-2);font-size:var(--text-sm)}
+.wallet{margin:0 0 var(--space-xl);animation:rise var(--dur) var(--ease-out) both}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.wallet{animation-duration:1ms}}
+.wallet-head{display:flex;flex-wrap:wrap;gap:var(--space-sm) var(--space-md);align-items:baseline;padding-bottom:var(--space-sm);border-bottom:2px solid var(--color-ink)}
+.stats{display:flex;flex-wrap:wrap;gap:var(--space-lg);margin:var(--space-md) 0;font-size:var(--text-sm);color:var(--color-ink-2)}
+.stats b{display:block;font-size:var(--text-lg);color:var(--color-ink);font-variant-numeric:tabular-nums}
+.verdict{padding:var(--space-md);border-radius:var(--radius);margin:var(--space-md) 0;font-weight:600}
+.verdict.bad{background:var(--color-danger-bg);color:var(--color-danger)}
+.verdict.good{background:var(--color-paper-2);color:var(--color-ok)}
+.verdict ul{margin:var(--space-sm) 0 0;padding-left:1.2em;font-weight:400;color:var(--color-ink)}
+.tbl{overflow-x:auto;border:1px solid var(--color-rule);border-radius:var(--radius)}
+table{width:100%;border-collapse:collapse;font-size:var(--text-sm)}
+th,td{text-align:left;padding:var(--space-sm) 10px;border-bottom:1px solid var(--color-rule);white-space:nowrap}
+th{background:var(--color-paper-2);font-weight:600}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:0}
+.chip{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.75rem;font-weight:600;background:var(--color-paper-2);color:var(--color-ink-2)}
+.chip.bad{background:var(--color-danger-bg);color:var(--color-danger)}
+.chip.warn{background:var(--color-warn-bg);color:var(--color-warn)}
+.chip.ok{color:var(--color-ok)}
+details{margin-top:var(--space-xl);border-top:1px solid var(--color-rule);padding-top:var(--space-md)}
+summary{cursor:pointer;font-weight:600}
+details li{margin-bottom:var(--space-sm)}
+footer{color:var(--color-ink-2);font-size:var(--text-sm);border-top:1px solid var(--color-rule);padding-top:var(--space-md);margin-top:var(--space-2xl)}
+</style>
+</head>
+<body>
+<main>
+  <h1>USDT 來源追查</h1>
+  <p class="lede">貼上你的 TRC20 收款地址，工具會往上追付款人、付款人的付款人，逐一比對 Tether 凍結黑名單。全部在你的瀏覽器裡跑，直接查 TRON 公開節點，不經過任何伺服器、不收集資料。</p>
+
+  <aside class="notice" role="note">
+    <b>不需要連接錢包，也不會要你簽名或授權。</b>只要貼上地址，查的都是鏈上公開資料。任何要你「連接錢包檢查 U 乾不乾淨」、要你授權或輸入助記詞的網站，都是盜幣詐騙，請直接關掉。
+  </aside>
+
+  <form id="f">
+    <label>收款地址 <small>一行一個，T 開頭的 TRC20 地址</small>
+      <textarea id="addrs" required spellcheck="false" placeholder="TXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"></textarea>
+    </label>
+    <div class="row">
+      <label>往上追幾層 <small>3 層是交易所風控常用深度</small>
+        <select id="hops"><option>1</option><option>2</option><option selected>3</option><option>4</option></select>
+      </label>
+      <label>第 2 層起每址追前幾大來源 <small>越大越慢</small>
+        <select id="fan"><option>2</option><option selected>3</option><option>5</option><option>8</option></select>
+      </label>
+      <label>TronGrid API Key <small>選填，免費申請，填了比較快</small>
+        <input id="key" type="password" autocomplete="off" placeholder="不填也能用">
+      </label>
+    </div>
+    <div class="actions">
+      <button id="go" type="submit">開始追查</button>
+      <button id="stop" type="button" class="ghost" disabled>停止</button>
+      <button id="csv" type="button" class="ghost" disabled>下載 CSV</button>
+      <span id="status" role="status" aria-live="polite"></span>
+    </div>
+  </form>
+
+  <div id="out"></div>
+
+  <details>
+    <summary>這工具看得到什麼、看不到什麼</summary>
+    <ul>
+      <li><b>看得到：</b>每個地址收到的 USDT-TRC20 轉帳、是否被 Tether 列入凍結黑名單（直接呼叫 USDT 合約 <span class="mono">isBlackListed</span>）、錢包建立日期。</li>
+      <li><b>看不到：</b>成交價格。「打折 U」是鏈下談的，鏈上只有轉帳，所以只能從來源特徵推測（新錢包、上游有黑名單）。</li>
+      <li><b>樞紐：</b>一個地址收過 1,000 筆以上，多半是交易所、OTC 或支付商，追到這裡就停。再往上每條路都會碰到所有人，命中也沒有意義。</li>
+      <li><b>黑名單只是 Tether 自己凍結的地址。</b>執法機關要求交易所凍結的帳戶不一定在上面；乾淨不代表一定安全，命中則幾乎確定有問題。</li>
+      <li><b>只追 USDT-TRC20。</b>ERC20、BEP20、TRX 不在範圍。</li>
+    </ul>
+  </details>
+
+  <footer>開源工具，原始碼與說明見 <a href="https://github.com/sentinelbotsaas-hub/usdt-trace" rel="noopener">GitHub</a>。資料來源：TronGrid 公開 API。結果僅供參考，不構成法律或財務意見。</footer>
+</main>
+
+<script>
+const USDT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+const API = 'https://api.trongrid.io';
+const HUB_CAP = 1000; // ponytail: transfer-count heuristic for exchanges/OTC; real labels need a paid tagging API
+const NEW_DAYS = 30;
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const $ = id => document.getElementById(id);
+let stopFlag = false, lastRows = [];
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const day = ms => ms ? new Date(ms).toISOString().slice(0, 10) : '-';
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const short = a => a.slice(0, 6) + '…' + a.slice(-6);
+const link = a => `<a class="mono" href="https://tronscan.org/#/address/${a}" target="_blank" rel="noopener" title="${a}">${short(a)}</a>`;
+
+async function api(path, body) {
+  const key = $('key').value.trim();
+  for (let i = 0; i < 5; i++) {
+    if (stopFlag) throw new Error('stopped');
+    try {
+      const r = await fetch(API + path, {
+        method: body ? 'POST' : 'GET',
+        headers: { 'Content-Type': 'application/json', ...(key ? { 'TRON-PRO-API-KEY': key } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (r.status === 429 || r.status >= 500) throw new Error('rate ' + r.status);
+      const j = await r.json();
+      await sleep(key ? 50 : 150);
+      return j;
+    } catch (e) {
+      if (e.message === 'stopped' || i === 4) throw e;
+      $('status').textContent = `TronGrid 限流中，${3 * (i + 1)} 秒後重試（填 API Key 可避免）…`;
+      await sleep(3000 * (i + 1));
+    }
+  }
+}
+
+async function b58hex(a) {
+  if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(a)) return null;
+  let n = 0n;
+  for (const c of a) n = n * 58n + BigInt(B58.indexOf(c));
+  const raw = new Uint8Array(25);
+  for (let i = 24; i >= 0; i--) { raw[i] = Number(n & 255n); n >>= 8n; }
+  const h1 = await crypto.subtle.digest('SHA-256', raw.slice(0, 21));
+  const h2 = new Uint8Array(await crypto.subtle.digest('SHA-256', h1));
+  for (let i = 0; i < 4; i++) if (h2[i] !== raw[21 + i]) return null;
+  return [...raw.slice(1, 21)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function blacklisted(a) {
+  try {
+    const hex = await b58hex(a);
+    const j = await api('/wallet/triggerconstantcontract', {
+      owner_address: a, contract_address: USDT, visible: true,
+      function_selector: 'isBlackListed(address)', parameter: hex.padStart(64, '0'),
+    });
+    return parseInt(j.constant_result[0], 16) === 1;
+  } catch (e) { if (e.message === 'stopped') throw e; return null; } // unknown, never shown as clean
+}
+
+async function inbound(a) {
+  let out = [], fp = null;
+  while (out.length < HUB_CAP) {
+    const j = await api(`/v1/accounts/${a}/transactions/trc20?only_to=true&limit=200&contract_address=${USDT}` + (fp ? `&fingerprint=${fp}` : ''));
+    out.push(...(j.data || []).filter(t => t.to === a));
+    fp = j.meta && j.meta.fingerprint;
+    if (!fp) break;
+  }
+  return out;
+}
+
+async function created(a) {
+  const j = await api(`/v1/accounts/${a}`);
+  return (j.data && j.data[0] && j.data[0].create_time) || null;
+}
+
+const cache = new Map(); // address -> node info, shared across roots
+
+async function info(a) {
+  if (cache.has(a)) { await cache.get(a).ready; return cache.get(a); }
+  const p = Promise.all([blacklisted(a), created(a)]).then(([b, c]) => Object.assign(n, { blacklisted: b, created: c }));
+  const n = { address: a, ready: p };
+  cache.set(a, n);
+  await p;
+  return n;
+}
+
+async function expand(n) {
+  if (n.senders) return;
+  const txs = await inbound(n.address);
+  n.inbound = txs.length;
+  n.hub = txs.length >= HUB_CAP;
+  const agg = {};
+  for (const t of txs) {
+    const s = agg[t.from] ||= { from: t.from, usdt: 0, n: 0, first: Infinity, last: 0 };
+    s.usdt += Number(t.value) / 1e6; s.n++;
+    s.first = Math.min(s.first, t.block_timestamp); s.last = Math.max(s.last, t.block_timestamp);
+  }
+  n.senders = Object.values(agg).sort((x, y) => y.usdt - x.usdt);
+}
+
+// ponytail: fixed concurrency 3 per level (nested levels multiply); free TronGrid tolerates it, raise with an API key
+async function pool(items, fn, size = 3) {
+  const q = [...items];
+  await Promise.all(Array.from({ length: Math.min(size, q.length) }, async () => { while (q.length) await fn(q.shift()); }));
+}
+
+async function trace(root, hops, fan, onTick) {
+  const nodes = [];
+  const seen = new Set();
+  async function visit(a, depth, path) {
+    if (seen.has(a)) return;
+    seen.add(a);
+    const n = await info(a);
+    const me = { ...n, depth, path };
+    nodes.push(me);
+    onTick(nodes.length);
+    if (depth >= hops) return;
+    await expand(n);
+    me.hub = n.hub;
+    if (n.hub && depth > 0) return;
+    const next = depth === 0 ? n.senders : n.senders.slice(0, fan);
+    await pool(next, s => visit(s.from, depth + 1, [...path, s.from]));
+  }
+  await visit(root, 0, [root]);
+  return nodes;
+}
+
+function payerStatus(s, nodes) {
+  const self = nodes.find(n => n.address === s.from) || {};
+  const up = nodes.filter(n => n.depth > 1 && n.path[1] === s.from && n.blacklisted);
+  const ageDays = self.created ? (s.first - self.created) / 864e5 : null;
+  const chips = [];
+  if (self.blacklisted) chips.push('<span class="chip bad">直接黑名單</span>');
+  if (up.length) chips.push(`<span class="chip bad">上游第 ${Math.min(...up.map(u => u.depth))} 層命中</span>`);
+  if (self.hub) chips.push('<span class="chip">交易所／OTC 樞紐</span>');
+  if (ageDays !== null && ageDays < NEW_DAYS) chips.push(`<span class="chip warn">新錢包（${Math.max(0, Math.round(ageDays))} 天）</span>`);
+  if (self.blacklisted === null) chips.push('<span class="chip warn">查詢失敗</span>');
+  if (!chips.length) chips.push('<span class="chip ok">未見異常</span>');
+  return { chips: chips.join(' '), self, up, ageDays };
+}
+
+function render(root, nodes) {
+  const top = nodes[0];
+  const senders = (cache.get(root) || {}).senders || [];
+  const total = senders.reduce((t, s) => t + s.usdt, 0);
+  const flagged = nodes.filter(n => n.blacklisted);
+  const el = document.createElement('section');
+  el.className = 'wallet';
+  const verdict = flagged.length
+    ? `<div class="verdict bad">發現 ${flagged.length} 個黑名單地址<ul>${flagged.map(f =>
+        `<li>第 ${f.depth} 層 ${link(f.address)}　路徑：${f.path.map(short).map(esc).join(' ← ')}</li>`).join('')}</ul></div>`
+    : `<div class="verdict good">追了 ${nodes.length} 個地址，沒有命中 Tether 黑名單</div>`;
+  el.innerHTML = `
+    <div class="wallet-head"><h2>收款地址</h2><span class="mono">${esc(root)}</span></div>
+    <div class="stats">
+      <span><b>${senders.length}</b>直接付款人</span>
+      <span><b>${total.toLocaleString('en-US', { maximumFractionDigits: 2 })}</b>收到 USDT${top.hub ? '（只算最近 1,000 筆）' : ''}</span>
+      <span><b>${nodes.length}</b>追過的地址</span>
+    </div>
+    ${verdict}
+    <div class="tbl"><table>
+      <thead><tr><th>付款人</th><th>USDT</th><th>筆數</th><th>首次</th><th>最近</th><th>判斷</th></tr></thead>
+      <tbody>${senders.map(s => `<tr><td>${link(s.from)}</td><td class="num">${s.usdt.toLocaleString('en-US', { maximumFractionDigits: 2 })}</td>
+        <td class="num">${s.n}</td><td>${day(s.first)}</td><td>${day(s.last)}</td><td>${payerStatus(s, nodes).chips}</td></tr>`).join('')
+        || '<tr><td colspan="6">沒有收到過 USDT-TRC20</td></tr>'}</tbody>
+    </table></div>`;
+  $('out').append(el);
+  for (const n of nodes) lastRows.push([root, n.depth, n.address, n.blacklisted === null ? 'unknown' : n.blacklisted, n.hub ? 'hub' : '', day(n.created), n.path.join(' <- ')]);
+}
+
+$('f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const roots = [...new Set($('addrs').value.split(/\s+/).map(s => s.trim()).filter(Boolean))];
+  const bad = [];
+  for (const r of roots) if (!(await b58hex(r))) bad.push(r);
+  if (bad.length) { $('status').textContent = '地址格式錯誤：' + bad.join('、'); return; }
+  if (!roots.length) return;
+  stopFlag = false; lastRows = []; $('out').innerHTML = '';
+  $('go').disabled = true; $('stop').disabled = false; $('csv').disabled = true;
+  const hops = +$('hops').value, fan = +$('fan').value;
+  try {
+    for (const [i, r] of roots.entries()) {
+      const nodes = await trace(r, hops, fan, k => { $('status').textContent = `第 ${i + 1}/${roots.length} 個收款地址，已查 ${k} 個地址…`; });
+      render(r, nodes);
+    }
+    $('status').textContent = '完成';
+  } catch (err) {
+    $('status').textContent = err.message === 'stopped' ? '已停止' : '查詢失敗：' + err.message + '（太頻繁可填 API Key 或稍後再試）';
+  } finally {
+    $('go').disabled = false; $('stop').disabled = true; $('csv').disabled = !lastRows.length;
+  }
+});
+
+$('stop').onclick = () => { stopFlag = true; };
+$('csv').onclick = () => {
+  const head = ['root', 'depth', 'address', 'blacklisted', 'hub', 'created', 'path'];
+  const csv = '﻿' + [head, ...lastRows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })), download: 'usdt-trace.csv' });
+  a.click();
+};
+
+// self-check: known address decodes, junk rejected
+b58hex(USDT).then(h => console.assert(h === 'a614f803b6fd780986a42c78ec9c7f77e6ded13c', 'b58 decode broken'));
+b58hex('Tnotanaddress').then(h => console.assert(h === null, 'b58 validation broken'));
+</script>
+</body>
+</html>
