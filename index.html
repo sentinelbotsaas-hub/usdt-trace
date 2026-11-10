@@ -121,6 +121,7 @@ footer{color:var(--color-ink-2);font-size:var(--text-sm);border-top:1px solid va
       <li><b>看不到：</b>成交價格。「打折 U」是鏈下談的，鏈上只有轉帳，所以只能從來源特徵推測（新錢包、上游有黑名單）。</li>
       <li><b>樞紐：</b>一個地址收過 1,000 筆以上，多半是交易所、OTC 或支付商，追到這裡就停。再往上每條路都會碰到所有人，命中也沒有意義。</li>
       <li><b>黑名單只是 Tether 自己凍結的地址。</b>執法機關要求交易所凍結的帳戶不一定在上面；乾淨不代表一定安全，命中則幾乎確定有問題。</li>
+      <li><b>看時間先後：</b>上游的錢必須在付款「之前」就進到對方錢包才算數。付款之後對方才收到的錢不可能流到你這筆，不會被算成命中。</li>
       <li><b>只追 USDT-TRC20。</b>ERC20、BEP20、TRX 不在範圍。</li>
     </ul>
   </details>
@@ -143,20 +144,32 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':
 const short = a => a.slice(0, 6) + '…' + a.slice(-6);
 const link = a => `<a class="mono" href="https://tronscan.org/#/address/${a}" target="_blank" rel="noopener" title="${a}">${short(a)}</a>`;
 
+// Global in-flight cap: nested per-level pools would otherwise multiply (3 x 3 x 3 = 27 parallel calls).
+let inflight = 0;
+const waiters = [];
+async function slot(max) {
+  while (inflight >= max) await new Promise(r => waiters.push(r));
+  inflight++;
+}
+function release() { inflight--; const w = waiters.shift(); if (w) w(); }
+
 async function api(path, body) {
   const key = $('key').value.trim();
   for (let i = 0; i < 5; i++) {
     if (stopFlag) throw new Error('stopped');
     try {
-      const r = await fetch(API + path, {
-        method: body ? 'POST' : 'GET',
-        headers: { 'Content-Type': 'application/json', ...(key ? { 'TRON-PRO-API-KEY': key } : {}) },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      if (r.status === 429 || r.status >= 500) throw new Error('rate ' + r.status);
-      const j = await r.json();
-      await sleep(key ? 50 : 150);
-      return j;
+      await slot(key ? 6 : 2);
+      try {
+        const r = await fetch(API + path, {
+          method: body ? 'POST' : 'GET',
+          headers: { 'Content-Type': 'application/json', ...(key ? { 'TRON-PRO-API-KEY': key } : {}) },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        if (r.status === 429 || r.status >= 500) throw new Error('rate ' + r.status);
+        const j = await r.json();
+        await sleep(key ? 50 : 250);
+        return j;
+      } finally { release(); }
     } catch (e) {
       if (e.message === 'stopped' || i === 4) throw e;
       $('status').textContent = `TronGrid 限流中，${3 * (i + 1)} 秒後重試（填 API Key 可避免）…`;
@@ -188,10 +201,12 @@ async function blacklisted(a) {
   } catch (e) { if (e.message === 'stopped') throw e; return null; } // unknown, never shown as clean
 }
 
-async function inbound(a) {
+// before = ms cutoff: only money that arrived before it could have flowed downstream
+async function inbound(a, before) {
   let out = [], fp = null;
   while (out.length < HUB_CAP) {
-    const j = await api(`/v1/accounts/${a}/transactions/trc20?only_to=true&limit=200&contract_address=${USDT}` + (fp ? `&fingerprint=${fp}` : ''));
+    const j = await api(`/v1/accounts/${a}/transactions/trc20?only_to=true&limit=200&contract_address=${USDT}`
+      + (before ? `&max_timestamp=${before}` : '') + (fp ? `&fingerprint=${fp}` : ''));
     out.push(...(j.data || []).filter(t => t.to === a));
     fp = j.meta && j.meta.fingerprint;
     if (!fp) break;
@@ -215,18 +230,20 @@ async function info(a) {
   return n;
 }
 
-async function expand(n) {
-  if (n.senders) return;
-  const txs = await inbound(n.address);
-  n.inbound = txs.length;
-  n.hub = txs.length >= HUB_CAP;
-  const agg = {};
-  for (const t of txs) {
-    const s = agg[t.from] ||= { from: t.from, usdt: 0, n: 0, first: Infinity, last: 0 };
-    s.usdt += Number(t.value) / 1e6; s.n++;
-    s.first = Math.min(s.first, t.block_timestamp); s.last = Math.max(s.last, t.block_timestamp);
-  }
-  n.senders = Object.values(agg).sort((x, y) => y.usdt - x.usdt);
+const expCache = new Map(); // `${address}|${cutoff}` -> Promise<{hub, senders}>
+
+function expand(a, before) {
+  const k = a + '|' + (before || '');
+  if (!expCache.has(k)) expCache.set(k, inbound(a, before).then(txs => {
+    const agg = {};
+    for (const t of txs) {
+      const s = agg[t.from] ||= { from: t.from, usdt: 0, n: 0, first: Infinity, last: 0 };
+      s.usdt += Number(t.value) / 1e6; s.n++;
+      s.first = Math.min(s.first, t.block_timestamp); s.last = Math.max(s.last, t.block_timestamp);
+    }
+    return { hub: txs.length >= HUB_CAP, senders: Object.values(agg).sort((x, y) => y.usdt - x.usdt) };
+  }));
+  return expCache.get(k);
 }
 
 // ponytail: fixed concurrency 3 per level (nested levels multiply); free TronGrid tolerates it, raise with an API key
@@ -235,29 +252,33 @@ async function pool(items, fn, size = 3) {
   await Promise.all(Array.from({ length: Math.min(size, q.length) }, async () => { while (q.length) await fn(q.shift()); }));
 }
 
+// Time-aware: a source only counts if its money reached the address BEFORE that address paid downstream.
+// ponytail: dedupe by (address, cutoff) + no cycles in a path; fan caps the tree size
 async function trace(root, hops, fan, onTick) {
   const nodes = [];
   const seen = new Set();
-  async function visit(a, depth, path) {
-    if (seen.has(a)) return;
-    seen.add(a);
+  async function visit(a, depth, path, before) {
+    const key = a + '|' + (before || '');
+    if (seen.has(key) || path.slice(0, -1).includes(a)) return;
+    seen.add(key);
     const n = await info(a);
-    const me = { ...n, depth, path };
+    const me = { address: a, blacklisted: n.blacklisted, created: n.created, depth, path, before };
     nodes.push(me);
     onTick(nodes.length);
     if (depth >= hops) return;
-    await expand(n);
-    me.hub = n.hub;
-    if (n.hub && depth > 0) return;
-    const next = depth === 0 ? n.senders : n.senders.slice(0, fan);
-    await pool(next, s => visit(s.from, depth + 1, [...path, s.from]));
+    const { hub, senders } = await expand(a, before);
+    me.hub = hub;
+    if (depth === 0) nodes.rootSenders = senders;
+    if (hub && depth > 0) return;
+    const next = depth === 0 ? senders : senders.slice(0, fan);
+    await pool(next, s => visit(s.from, depth + 1, [...path, s.from], s.last));
   }
   await visit(root, 0, [root]);
   return nodes;
 }
 
 function payerStatus(s, nodes) {
-  const self = nodes.find(n => n.address === s.from) || {};
+  const self = nodes.find(n => n.depth === 1 && n.address === s.from) || {};
   const up = nodes.filter(n => n.depth > 1 && n.path[1] === s.from && n.blacklisted);
   const ageDays = self.created ? (s.first - self.created) / 864e5 : null;
   const chips = [];
@@ -272,7 +293,7 @@ function payerStatus(s, nodes) {
 
 function render(root, nodes) {
   const top = nodes[0];
-  const senders = (cache.get(root) || {}).senders || [];
+  const senders = nodes.rootSenders || [];
   const total = senders.reduce((t, s) => t + s.usdt, 0);
   const flagged = nodes.filter(n => n.blacklisted);
   const el = document.createElement('section');
@@ -296,7 +317,7 @@ function render(root, nodes) {
         || '<tr><td colspan="6">沒有收到過 USDT-TRC20</td></tr>'}</tbody>
     </table></div>`;
   $('out').append(el);
-  for (const n of nodes) lastRows.push([root, n.depth, n.address, n.blacklisted === null ? 'unknown' : n.blacklisted, n.hub ? 'hub' : '', day(n.created), n.path.join(' <- ')]);
+  for (const n of nodes) lastRows.push([root, n.depth, n.address, n.blacklisted === null ? 'unknown' : n.blacklisted, n.hub ? 'hub' : '', day(n.created), n.before ? day(n.before) : '', n.path.join(' <- ')]);
 }
 
 $('f').addEventListener('submit', async e => {
@@ -306,7 +327,7 @@ $('f').addEventListener('submit', async e => {
   for (const r of roots) if (!(await b58hex(r))) bad.push(r);
   if (bad.length) { $('status').textContent = '地址格式錯誤：' + bad.join('、'); return; }
   if (!roots.length) return;
-  stopFlag = false; lastRows = []; $('out').innerHTML = ''; cache.clear(); // a stopped run leaves rejected entries behind
+  stopFlag = false; lastRows = []; $('out').innerHTML = ''; cache.clear(); expCache.clear(); // a stopped run leaves rejected entries behind
   $('go').disabled = true; $('stop').disabled = false; $('csv').disabled = true;
   const hops = +$('hops').value, fan = +$('fan').value;
   try {
@@ -324,7 +345,7 @@ $('f').addEventListener('submit', async e => {
 
 $('stop').onclick = () => { stopFlag = true; };
 $('csv').onclick = () => {
-  const head = ['root', 'depth', 'address', 'blacklisted', 'hub', 'created', 'path'];
+  const head = ['root', 'depth', 'address', 'blacklisted', 'hub', 'created', 'counted_before', 'path'];
   const csv = '﻿' + [head, ...lastRows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
   const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })), download: 'usdt-trace.csv' });
   a.click();
