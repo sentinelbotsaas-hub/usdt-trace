@@ -119,7 +119,7 @@ footer{color:var(--color-ink-2);font-size:var(--text-sm);border-top:1px solid va
     <ul>
       <li><b>看得到：</b>每個地址收到的 USDT-TRC20 轉帳、是否被 Tether 列入凍結黑名單（直接呼叫 USDT 合約 <span class="mono">isBlackListed</span>）、錢包建立日期。</li>
       <li><b>看不到：</b>成交價格。「打折 U」是鏈下談的，鏈上只有轉帳，所以只能從來源特徵推測（新錢包、上游有黑名單）。</li>
-      <li><b>樞紐：</b>一個地址收過 1,000 筆以上，多半是交易所、OTC 或支付商，追到這裡就停。再往上每條路都會碰到所有人，命中也沒有意義。</li>
+      <li><b>樞紐：</b>一個地址進出合計 1,000 筆以上，多半是交易所、OTC、支付商或出款錢包，追到這裡就停。再往上每條路都會碰到所有人，命中也沒有意義。</li>
       <li><b>黑名單只是 Tether 自己凍結的地址。</b>執法機關要求交易所凍結的帳戶不一定在上面；乾淨不代表一定安全，命中則幾乎確定有問題。</li>
       <li><b>看時間先後：</b>上游的錢必須在付款「之前」就進到對方錢包才算數。付款之後對方才收到的錢不可能流到你這筆，不會被算成命中。</li>
       <li><b>只追 USDT-TRC20。</b>ERC20、BEP20、TRX 不在範圍。</li>
@@ -202,16 +202,20 @@ async function blacklisted(a) {
 }
 
 // before = ms cutoff: only money that arrived before it could have flowed downstream
-async function inbound(a, before) {
-  let out = [], fp = null;
-  while (out.length < HUB_CAP) {
-    const j = await api(`/v1/accounts/${a}/transactions/trc20?only_to=true&limit=200&contract_address=${USDT}`
+// both = count transfers in BOTH directions toward the hub cap: a payout hot wallet can have
+// 30 deposits but 30,000 withdrawals. The root uses both=false so its payer list is never truncated.
+async function inbound(a, before, both) {
+  let out = [], total = 0, fp = null;
+  while (total < HUB_CAP) {
+    const j = await api(`/v1/accounts/${a}/transactions/trc20?limit=200&contract_address=${USDT}` + (both ? '' : '&only_to=true')
       + (before ? `&max_timestamp=${before}` : '') + (fp ? `&fingerprint=${fp}` : ''));
-    out.push(...(j.data || []).filter(t => t.to === a));
+    const data = j.data || [];
+    total += data.length;
+    out.push(...data.filter(t => t.to === a));
     fp = j.meta && j.meta.fingerprint;
     if (!fp) break;
   }
-  return out;
+  return { txs: out, total };
 }
 
 async function created(a) {
@@ -232,16 +236,16 @@ async function info(a) {
 
 const expCache = new Map(); // `${address}|${cutoff}` -> Promise<{hub, senders}>
 
-function expand(a, before) {
-  const k = a + '|' + (before || '');
-  if (!expCache.has(k)) expCache.set(k, inbound(a, before).then(txs => {
+function expand(a, before, both) {
+  const k = a + '|' + (before || '') + '|' + !!both;
+  if (!expCache.has(k)) expCache.set(k, inbound(a, before, both).then(({ txs, total }) => {
     const agg = {};
     for (const t of txs) {
       const s = agg[t.from] ||= { from: t.from, usdt: 0, n: 0, first: Infinity, last: 0 };
       s.usdt += Number(t.value) / 1e6; s.n++;
       s.first = Math.min(s.first, t.block_timestamp); s.last = Math.max(s.last, t.block_timestamp);
     }
-    return { hub: txs.length >= HUB_CAP, senders: Object.values(agg).sort((x, y) => y.usdt - x.usdt) };
+    return { hub: total >= HUB_CAP, senders: Object.values(agg).sort((x, y) => y.usdt - x.usdt) };
   }));
   return expCache.get(k);
 }
@@ -266,7 +270,7 @@ async function trace(root, hops, fan, onTick) {
     nodes.push(me);
     onTick(nodes.length);
     if (depth >= hops) return;
-    const { hub, senders } = await expand(a, before);
+    const { hub, senders } = await expand(a, before, depth > 0);
     me.hub = hub;
     if (depth === 0) nodes.rootSenders = senders;
     if (hub && depth > 0) return;
