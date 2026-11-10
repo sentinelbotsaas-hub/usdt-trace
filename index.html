@@ -306,7 +306,7 @@ $('f').addEventListener('submit', async e => {
   for (const r of roots) if (!(await b58hex(r))) bad.push(r);
   if (bad.length) { $('status').textContent = '地址格式錯誤：' + bad.join('、'); return; }
   if (!roots.length) return;
-  stopFlag = false; lastRows = []; $('out').innerHTML = '';
+  stopFlag = false; lastRows = []; $('out').innerHTML = ''; cache.clear(); // a stopped run leaves rejected entries behind
   $('go').disabled = true; $('stop').disabled = false; $('csv').disabled = true;
   const hops = +$('hops').value, fan = +$('fan').value;
   try {
